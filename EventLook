@@ -1,0 +1,229 @@
+-- Event Look 2.0 by LookHub
+-- GUI-панель, лог, вызов ивентов кнопками, команды + ресайзинг и динамический скроллинг
+
+repeat task.wait() until game:IsLoaded()
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService       = game:GetService("HttpService")
+local UserInputService  = game:GetService("UserInputService")
+local LocalPlayer       = Players.LocalPlayer
+local PlayerGui         = LocalPlayer:WaitForChild("PlayerGui")
+
+local gui = Instance.new("ScreenGui", PlayerGui)
+gui.Name = "EventLookUI"
+gui.ResetOnSpawn = false
+
+-- ⬛ Главный фрейм
+local frame = Instance.new("Frame", gui)
+frame.Size = UDim2.new(0, 540, 0, 300)
+frame.Position = UDim2.new(0.05, 0, 0.1, 0)
+frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+frame.Draggable = true
+frame.Active = true
+frame.BorderSizePixel = 0
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+-- 📜 Скроллинг лог
+local scroll = Instance.new("ScrollingFrame", frame)
+scroll.Size = UDim2.new(1, -10, 1, -40)
+scroll.Position = UDim2.new(0, 5, 0, 5)
+scroll.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+scroll.ScrollBarThickness = 6
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.AutomaticSize = Enum.AutomaticSize.None
+scroll.BorderSizePixel = 0
+scroll.ClipsDescendants = true
+
+-- 📄 Контейнер текста
+local logText = Instance.new("TextLabel", scroll)
+logText.Size = UDim2.new(1, -10, 0, 20)
+logText.Position = UDim2.new(0, 5, 0, 0)
+logText.TextWrapped = true
+logText.TextXAlignment = Enum.TextXAlignment.Left
+logText.TextYAlignment = Enum.TextYAlignment.Top
+logText.Font = Enum.Font.Code
+logText.TextColor3 = Color3.new(1, 1, 1)
+logText.TextSize = 14
+logText.Text = ""
+logText.BackgroundTransparency = 1
+logText.AutomaticSize = Enum.AutomaticSize.Y
+
+-- 💬 Ввод команд
+local input = Instance.new("TextBox", frame)
+input.Size = UDim2.new(1, -10, 0, 30)
+input.Position = UDim2.new(0, 5, 1, -35)
+input.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+input.Font = Enum.Font.Code
+input.TextColor3 = Color3.new(1, 1, 1)
+input.TextSize = 14
+input.PlaceholderText = "!scan, !clear, !copy, !panel"
+input.ClearTextOnFocus = true
+
+-- 🔲 Уголок для растягивания
+local resizeHandle = Instance.new("TextButton", frame)
+resizeHandle.Size = UDim2.new(0, 20, 0, 20)
+resizeHandle.Position = UDim2.new(1, -20, 1, -20)
+resizeHandle.BackgroundTransparency = 1
+resizeHandle.Text = ""
+resizeHandle.AutoButtonColor = false
+resizeHandle.Name = "ResizeHandle"
+
+local resizing = false
+
+resizeHandle.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		resizing = true
+		frame.Draggable = false
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		resizing = false
+		frame.Draggable = true
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if resizing and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local mousePos = input.Position
+		local newWidth = math.clamp(mousePos.X - frame.AbsolutePosition.X, 300, 1000)
+		local newHeight = math.clamp(mousePos.Y - frame.AbsolutePosition.Y, 200, 800)
+		frame.Size = UDim2.new(0, newWidth, 0, newHeight)
+		scroll.Size = UDim2.new(1, -10, 1, -40)
+		input.Position = UDim2.new(0, 5, 1, -35)
+	end
+end)
+
+-- 🧠 Данные
+local logLines = {}
+local eventCache = {}
+local recentEvents = {}
+local MAX_LOG = 100
+local copiedEvent = nil
+local panelOpened = false
+
+-- 📌 Панель событий
+local panel = Instance.new("Frame", gui)
+panel.Size = UDim2.new(0, 250, 0, 300)
+panel.Position = UDim2.new(0.65, 0, 0.1, 0)
+panel.Visible = false
+panel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 6)
+
+local scrollButtons = Instance.new("ScrollingFrame", panel)
+scrollButtons.Size = UDim2.new(1, -10, 1, -10)
+scrollButtons.Position = UDim2.new(0, 5, 0, 5)
+scrollButtons.BackgroundTransparency = 1
+scrollButtons.ScrollBarThickness = 6
+scrollButtons.CanvasSize = UDim2.new(0, 0, 0, 0)
+scrollButtons.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scrollButtons.AutomaticSize = Enum.AutomaticSize.None
+scrollButtons.BorderSizePixel = 0
+scrollButtons.ClipsDescendants = true
+local layout = Instance.new("UIListLayout", scrollButtons)
+layout.Padding = UDim.new(0, 4)
+
+-- ⏰ Время
+local function timeStr()
+	return os.date("[%H:%M:%S]")
+end
+
+-- 📥 Добавить лог
+local function log(msg)
+	table.insert(logLines, timeStr() .. " " .. msg)
+	if #logLines > MAX_LOG then table.remove(logLines, 1) end
+	logText.Text = table.concat(logLines, "\n")
+	scroll.CanvasSize = UDim2.new(0, 0, 0, logText.TextBounds.Y + 10)
+end
+
+-- 🔘 Кнопка вызова ивента
+local function addEventButton(remote)
+	if recentEvents[remote] then return end
+	recentEvents[remote] = true
+
+	local btn = Instance.new("TextButton", scrollButtons)
+	btn.Size = UDim2.new(1, 0, 0, 30)
+	btn.Text = remote.Name
+	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	btn.TextColor3 = Color3.new(1, 1, 1)
+	btn.Font = Enum.Font.Code
+	btn.TextSize = 14
+
+	btn.MouseButton1Click:Connect(function()
+		pcall(function()
+			remote:FireServer()
+			log("▶️ Повторно вызван: " .. remote:GetFullName())
+		end)
+	end)
+end
+
+-- 📦 Скан ивентов
+for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+	if obj:IsA("RemoteEvent") then
+		eventCache[obj] = true
+	end
+end
+
+-- 💻 Команды
+input.FocusLost:Connect(function(enter)
+	if not enter then return end
+	local cmd = input.Text:lower()
+	input.Text = ""
+
+	if cmd == "!scan" then
+		log("🔍 Найдено RemoteEvent:")
+		for remote in pairs(eventCache) do
+			log(" • " .. remote:GetFullName())
+		end
+
+	elseif cmd == "!clear" then
+		logLines = {}
+		logText.Text = ""
+
+	elseif cmd == "!copy" then
+		if copiedEvent then
+			setclipboard(copiedEvent)
+			log("📋 Скопировано: " .. copiedEvent)
+		else
+			log("❌ Нет последнего ивента.")
+		end
+
+	elseif cmd == "!panel" then
+		panelOpened = not panelOpened
+		panel.Visible = panelOpened
+		log("📂 Панель " .. (panelOpened and "открыта" or "закрыта"))
+
+	elseif cmd == "!close" then
+		gui:Destroy()
+
+	else
+		log("⚠️ Неизвестная команда: " .. cmd)
+	end
+end)
+
+-- 📡 Перехват FireServer
+if hookmetamethod and getnamecallmethod and checkcaller then
+	local old
+	old = hookmetamethod(game, "__namecall", function(self, ...)
+		local method = getnamecallmethod()
+		if method == "FireServer" and self:IsA("RemoteEvent") and not checkcaller() then
+			if eventCache[self] then
+				local args = {...}
+				local json = ""
+				pcall(function() json = HttpService:JSONEncode(args) end)
+				log("🔥 Activated: " .. self:GetFullName())
+				if #json > 0 then log("   → Args: " .. json) end
+				copiedEvent = self:GetFullName()
+				addEventButton(self)
+			end
+		end
+		return old(self, ...)
+	end)
+else
+	log("⚠️ hookmetamethod не поддерживается.")
+end
+
+log("🤖 Event Look 2.0 запущен")
+log("💡 Доступные команды: !scan, !clear, !copy, !panel, !close")
